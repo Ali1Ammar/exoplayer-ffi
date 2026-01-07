@@ -20,6 +20,15 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   String _status = 'Idle';
   ExoPlayer? _player;
+  int? _textureId;
+
+  // Keep references to prevent GC if needed, though JNI objects handle it.
+  JObject? _surface;
+  JObject? _textureEntry;
+
+  // Media URL (Simpler video for emulator compatibility)
+  static const _mediaUrl =
+      'https://flutter.github.io/assets-for-api-docs/assets/videos/bee.mp4';
 
   @override
   void initState() {
@@ -27,60 +36,187 @@ class _MyAppState extends State<MyApp> {
     _initExoPlayer();
   }
 
-  Future<void> _initExoPlayer() async {
-    if (!Platform.isAndroid) {
-      setState(() {
-        _status = 'Not running on Android';
-      });
-      return;
+  @override
+  void dispose() {
+    _player?.release();
+    // Explicitly release Surface if possible, though JNI GC helps.
+    if (_surface != null) {
+      // call release() on surface?
+      // For now, just clearing the reference.
+      // Ideally we should call Surface.release() via JNI.
+      _releaseSurface(_surface!);
     }
+    super.dispose();
+  }
+
+  void _releaseSurface(JObject surface) {
+    using((arena) {
+      final releaseMethod = Jni.env.GetMethodID(
+        Jni.env.GetObjectClass(surface.reference.pointer),
+        'release'.toNativeUtf8(allocator: arena).cast(),
+        '()V'.toNativeUtf8(allocator: arena).cast(),
+      );
+      Jni.env.CallVoidMethodA(
+        surface.reference.pointer,
+        releaseMethod,
+        nullptr,
+      );
+    });
+  }
+
+  Future<void> _initExoPlayer() async {
+    if (!Platform.isAndroid) return;
 
     try {
-      setState(() {
-        _status = "Initializing...";
-      });
+      setState(() => _status = "Initializing...");
 
-      // Get Android Application Context
       final context = _getApplicationContext();
 
-      // Build ExoPlayer
-      // Note: If generated bindings do not include nested classes like ExoPlayer.Builder
-      // directly, you might need to use JNI reflection or ensure they are generated.
-      // Based on typical jnigen output, nested classes are flattened (e.g. ExoPlayer_Builder).
+      // We must use the application class loader to find MainActivity
+      final result = _createTextureWithClassLoader(context);
 
-      // Assuming ExoPlayer_Builder is generated:
+      final array = result.as(JArray.type(JObject.type));
+      final idObj = array[0].as(JLong.type);
+      final textureId = idObj.longValue;
+      final surface = array[1].as(JObject.type);
+      final entry = array[2].as(JObject.type); // Keep entry alive!
+
+      _textureId = textureId();
+      _surface = surface;
+      _textureEntry = entry;
+
+      final mainLooper = _getMainLooper();
+
       final builder = ExoPlayer_Builder(context);
+      builder.setPlaybackLooper(mainLooper);
       _player = builder.build();
 
+      _player!.getVideoComponent().setVideoSurface(surface);
+
+      final playerInterface = _player!.as(Player.type);
+
+      final mediaItem = MediaItem.fromUri(_mediaUrl.toJString());
+      playerInterface.setMediaItem(mediaItem);
+
+      playerInterface.prepare();
+
+      playerInterface.setPlayWhenReady(true);
+
       setState(() {
-        _status = 'ExoPlayer initialized: ${_player}';
+        _status = 'Top: Playing texture $_textureId';
       });
     } catch (e, stack) {
-      setState(() {
-        _status = 'Error: $e';
-      });
+      setState(() => _status = 'Error: $e');
       print(e);
       print(stack);
     }
   }
 
+  JObject _getMainLooper() {
+    return using((arena) {
+      final looperClass = Jni.env.FindClass(
+        'android/os/Looper'.toNativeUtf8(allocator: arena).cast(),
+      );
+      final getMainLooperMethod = Jni.env.GetStaticMethodID(
+        looperClass,
+        'getMainLooper'.toNativeUtf8(allocator: arena).cast(),
+        '()Landroid/os/Looper;'.toNativeUtf8(allocator: arena).cast(),
+      );
+      final looper = Jni.env.CallStaticObjectMethodA(
+        looperClass,
+        getMainLooperMethod,
+        nullptr,
+      );
+      return JObject.fromReference(JGlobalReference(looper));
+    });
+  }
+
+  // Helper to load MainActivity using the Context's ClassLoader
+  JObject _createTextureWithClassLoader(JObject context) {
+    return using((arena) {
+      // context.getClassLoader()
+      final getClassLoaderId = Jni.env.GetMethodID(
+        Jni.env.GetObjectClass(context.reference.pointer),
+        'getClassLoader'.toNativeUtf8(allocator: arena).cast(),
+        '()Ljava/lang/ClassLoader;'.toNativeUtf8(allocator: arena).cast(),
+      );
+      final classLoaderRef = Jni.env.CallObjectMethodA(
+        context.reference.pointer,
+        getClassLoaderId,
+        nullptr,
+      );
+
+      final classLoader = JObject.fromReference(
+        JGlobalReference(classLoaderRef),
+      );
+
+      final loadClassId = Jni.env.GetMethodID(
+        Jni.env.GetObjectClass(classLoader.reference.pointer),
+        'loadClass'.toNativeUtf8(allocator: arena).cast(),
+        '(Ljava/lang/String;)Ljava/lang/Class;'
+            .toNativeUtf8(allocator: arena)
+            .cast(),
+      );
+
+      final className = 'com.example.example.MainActivity'
+          .toJString()
+          .reference
+          .pointer;
+      // We need to pass args.
+      final args = arena<JValue>(1);
+      args[0].l = className;
+
+      final mainActivityClassRef = Jni.env.CallObjectMethodA(
+        classLoader.reference.pointer,
+        loadClassId,
+        args,
+      );
+
+      if (mainActivityClassRef == nullptr) {
+        throw 'Failed to load MainActivity class';
+      }
+
+      final createTextureMethod = Jni.env.GetStaticMethodID(
+        mainActivityClassRef.cast(), // cast to jclass
+        'createTexture'.toNativeUtf8(allocator: arena).cast(),
+        '()Ljava/lang/Object;'.toNativeUtf8(allocator: arena).cast(),
+      );
+
+      final res = Jni.env.CallStaticObjectMethodA(
+        mainActivityClassRef.cast(),
+        createTextureMethod,
+        nullptr,
+      );
+
+      return JObject.fromReference(JGlobalReference(res));
+    });
+  }
+
   JObject _getApplicationContext() {
     return using((arena) {
-      final activityThreadClass = Jni.env.FindClass(
-        'android/app/ActivityThread'.toNativeUtf8(allocator: arena).cast(),
-      );
+      final className = 'android/app/ActivityThread'
+          .toNativeUtf8(allocator: arena)
+          .cast<Char>();
+      final activityThreadClass = Jni.env.FindClass(className);
+
+      if (activityThreadClass == nullptr) {
+        throw 'Failed to find ActivityThread class';
+      }
+
       final currentAppMethod = Jni.env.GetStaticMethodID(
         activityThreadClass,
         'currentApplication'.toNativeUtf8(allocator: arena).cast(),
         '()Landroid/app/Application;'.toNativeUtf8(allocator: arena).cast(),
       );
-      // Use CallStaticObjectMethodA with nullptr for empty arguments
+
       final app = Jni.env.CallStaticObjectMethodA(
         activityThreadClass,
         currentAppMethod,
         nullptr,
       );
 
+      // Warning: 'reference' is internal.
+      // But we are using low-level JNI, so it's unavoidable or we use JObject.fromReference directly.
       return JObject.fromReference(JGlobalReference(app));
     });
   }
@@ -90,7 +226,45 @@ class _MyAppState extends State<MyApp> {
     return MaterialApp(
       home: Scaffold(
         appBar: AppBar(title: const Text('ExoPlayer JNI Example')),
-        body: Center(child: Text(_status)),
+        body: Column(
+          children: [
+            if (_textureId != null)
+              AspectRatio(
+                aspectRatio: 16 / 9,
+                child: Container(
+                  color: Colors.black,
+                  child: Texture(textureId: _textureId!),
+                ),
+              )
+            else
+              Container(
+                height: 200,
+                color: Colors.black12,
+                child: const Center(child: CircularProgressIndicator()),
+              ),
+            Padding(padding: const EdgeInsets.all(8.0), child: Text(_status)),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.play_arrow),
+                  onPressed: () =>
+                      _player != null ? _player!.as(Player.type).play() : null,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.pause),
+                  onPressed: () =>
+                      _player != null ? _player!.as(Player.type).pause() : null,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.stop),
+                  onPressed: () =>
+                      _player != null ? _player!.as(Player.type).stop() : null,
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
