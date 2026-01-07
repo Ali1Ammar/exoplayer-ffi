@@ -95,7 +95,33 @@ class _MyAppState extends State<MyApp> {
 
       final playerInterface = _player!.as(Player.type);
 
-      final mediaItem = MediaItem.fromUri(_mediaUrl.toJString());
+      print('DEBUG: Setup DRM');
+
+      // Example DRM stream (Widevine)
+      // Tears of Steel (DASH)
+      const drmMediaUrl =
+          'https://storage.googleapis.com/wvmedia/cenc/h264/tears/tears.mpd';
+      const licenseUrl =
+          'https://proxy.uat.widevine.com/proxy?provider=widevine_test';
+      const widevineUuid = 'edef8ba9-79d6-4ace-a3c8-27dcd51d21ed';
+
+      // 1. Create UUID
+      final uuid = _createUUID(widevineUuid);
+
+      // 2. Create DrmConfiguration
+      final drmConfigBuilder = MediaItem_DrmConfiguration_Builder(
+        uuid,
+      ).setLicenseUri$1(licenseUrl.toJString());
+
+      final drmConfig = drmConfigBuilder.build();
+
+      // 3. Create MediaItem with DRM
+      final mediaItemBuilder = MediaItem_Builder()
+          .setUri(drmMediaUrl.toJString())
+          .setDrmConfiguration(drmConfig);
+
+      final mediaItem = mediaItemBuilder.build();
+
       playerInterface.setMediaItem(mediaItem);
 
       playerInterface.prepare();
@@ -110,6 +136,32 @@ class _MyAppState extends State<MyApp> {
       print(e);
       print(stack);
     }
+  }
+
+  JObject _createUUID(String uuidString) {
+    return using((arena) {
+      final uuidClass = Jni.env.FindClass(
+        'java/util/UUID'.toNativeUtf8(allocator: arena).cast(),
+      );
+      final fromStringMethod = Jni.env.GetStaticMethodID(
+        uuidClass,
+        'fromString'.toNativeUtf8(allocator: arena).cast(),
+        '(Ljava/lang/String;)Ljava/util/UUID;'
+            .toNativeUtf8(allocator: arena)
+            .cast(),
+      );
+
+      final jString = uuidString.toJString().reference.pointer;
+      final args = arena<JValue>(1);
+      args[0].l = jString;
+
+      final result = Jni.env.CallStaticObjectMethodA(
+        uuidClass,
+        fromStringMethod,
+        args,
+      );
+      return JObject.fromReference(JGlobalReference(result));
+    });
   }
 
   JObject _getMainLooper() {
