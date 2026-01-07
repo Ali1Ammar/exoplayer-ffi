@@ -1,16 +1,31 @@
-# example
+# ExoPlayer JNI Example
 
-A new Flutter project.
+This example demonstrates how to use `package:jni` to integrate Android's ExoPlayer directly into a Flutter application without writing any Java/Kotlin platform channel code.
 
-## Getting Started
+It showcases:
+- **Direct JNI Integration**: initializing `ExoPlayer` from Dart.
+- **Surface Texture Rendering**: passing a Flutter `SurfaceTexture` to ExoPlayer for video rendering.
+- **DRM Support**: Configuring Widevine DRM for protected content playback.
+- **DASH Playback**: playing adaptive streaming content.
 
-This project is a starting point for a Flutter application.
+## Screenshots
 
-A few resources to get you started if this is your first Flutter project:
+<img src="screenshot.png" width="300" />
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+## Demo Video
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Note: The video below is a short recording of the playback.
+
+<video src="demo.mp4" width="300" controls></video>
+
+## How it works
+
+1. **JNI Bindings**: We use `jnigen` to generate bindings for the ExoPlayer Android library.
+2. **Texture Registry**: We create a `SurfaceTexture` on the Android side (via `MainActivity.kt` helper for now) and pass the surface to ExoPlayer.
+3. **Dart Control**: All player controls (prepare, play, pause, setMediaItem) are called directly from Dart using the generated JNI bindings.
+
+## Running
+
+```bash
+flutter run
+```
